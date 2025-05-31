@@ -230,7 +230,7 @@ def main():
     parser.add_argument(
         "--model_type", type=str, default="opt", choices=["opt", "mamba"]
     )
-    parser.add_argument("--seq_len", type=int, default=128)
+    parser.add_argument("--seq_len", type=int, default=2048)
     parser.add_argument(
         "--num_devices", type=int, default=4, help="Number of devices to use."
     )
