@@ -95,7 +95,7 @@ def train_model(
     print(f"Per device batch size: {per_device_batch_size} for an effective batch size of {accumulation_steps} * {num_devices} = {GLOBAL_BATCH_SIZE}")
 
     try:
-        dataset = load_dataset(f"TalkingBabies/train_100M_{seq_len}_single_shuffle")
+        dataset = load_dataset(f"Talking-Babies/train_100M_{seq_len}_single_shuffle")
     except Exception as e:
         print(f"Dataset for seq_len {seq_len} not found.")
         print(f"Error: {e}")
