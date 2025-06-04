@@ -18,6 +18,7 @@ import wandb
 TRAIN_EPOCHS = 10
 GLOBAL_BATCH_SIZE = 64  # 64*16k = 1M tokens per batch
 
+
 def get_deepspeed_config(accumulation_steps, num_devices):
     return {
         "zero_optimization": {
@@ -29,6 +30,7 @@ def get_deepspeed_config(accumulation_steps, num_devices):
         "gradient_accumulation_steps": accumulation_steps,
         "bf16": {"enabled": True},
     }
+
 
 class CustomCheckpointingCallback(TrainerCallback):
     def __init__(self, total_steps):
@@ -46,13 +48,14 @@ class CustomCheckpointingCallback(TrainerCallback):
             control.should_save = True
             self.num_checkpoints += 1
             segment_size = self.rate * self.total_steps
-            next_save_step = int((self.num_checkpoints+1) * segment_size)
-            state.save_steps = next_save_step if state.global_step - next_save_step > 0 else next_save_step+1
+            next_save_step = int((self.num_checkpoints + 1) * segment_size)
+            state.save_steps = next_save_step if state.global_step - next_save_step > 0 else next_save_step + 1
             print(f"Checkpointing at step {state.global_step}")
             if self.num_checkpoints == 9:
                 self.rate *= 10
                 self.num_checkpoints = 0
         return control
+
 
 # --- Model Training Script --- #
 
@@ -67,24 +70,19 @@ def train_model(
     dataset=None,
 ):
     # --- Dataset Setup --- #
-
-# --- Dataset Setup --- #
-
     if dataset is None:
         dataset_name = f"train_100M_{seq_len}_single_shuffle"
         dataset = f"Talking-Babies/{dataset_name}"
     else:
         dataset_name = dataset if isinstance(dataset, str) else f"train_100M_{seq_len}_single_shuffle"
 
-    # Sanitize dataset name for valid hub_model_id
     sanitized_dataset_name = dataset_name.replace("/", "-")
 
     print(f"Loading dataset: {dataset}")
     try:
         dataset = load_dataset(dataset)
     except Exception as e:
-        print(f"Dataset '{dataset}' not found.")
-        print(f"Error: {e}")
+        print(f"Dataset '{dataset}' not found.\nError: {e}")
         exit(1)
 
     dataset = dataset.map(lambda x: {"labels": x["input_ids"]}, num_proc=16)
@@ -97,20 +95,18 @@ def train_model(
         output_dir = f"./checkpoints/{model_type}-babylm-{seq_len}"
 
     os.makedirs(output_dir, exist_ok=True)
-
     run_name = f"{model_type}_babylm_{seq_len}"
 
     per_device_batch_size = GLOBAL_BATCH_SIZE / (accumulation_steps * num_devices)
     if int(per_device_batch_size) != per_device_batch_size:
         raise ValueError(
             f"Batch size {per_device_batch_size} is not an integer. "
-            f"Please adjust the GLOBAL_BATCH_SIZE, num_devices, and accumulation_steps."
+            f"Adjust GLOBAL_BATCH_SIZE, num_devices, or accumulation_steps."
         )
     per_device_batch_size = int(per_device_batch_size)
-    print(f"Per device batch size: {per_device_batch_size} for an effective batch size of {accumulation_steps} * {num_devices} = {GLOBAL_BATCH_SIZE}")
+    print(f"Per device batch size: {per_device_batch_size} (effective batch size = {accumulation_steps} * {num_devices})")
 
     # --- Model Setup --- #
-
     if model_type == "opt":
         config = OPTConfig(
             vocab_size=50257,
@@ -132,7 +128,6 @@ def train_model(
         model = MambaForCausalLM(config)
 
     # --- WandB Logging --- #
-
     local_rank = int(os.environ.get("RANK", 0))
     if local_rank == 0:
         wandb.init(
@@ -143,14 +138,12 @@ def train_model(
         )
 
     # --- Training Arguments --- #
-
     total_steps = TRAIN_EPOCHS * len(train_dataset) // GLOBAL_BATCH_SIZE
     initial_save_steps = max(1, total_steps // 1000)
     warmup_steps = int(total_steps * 0.05)
 
-    custom_checkpointing_callback = CustomCheckpointingCallback(total_steps)
-    print(f'Initial save steps set to 1% of an epoch: {initial_save_steps:.2f} steps')
-    print(f'Warmup steps set to 5% of total steps: {warmup_steps:.2f} steps')
+    print(f"Initial save steps: {initial_save_steps}")
+    print(f"Warmup steps: {warmup_steps}")
 
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -167,26 +160,24 @@ def train_model(
         logging_steps=max(total_steps // 1000, 1),
         disable_tqdm=False,
         push_to_hub=push_to_hub,
-        hub_model_id=f"Talking-Babies/{model_type}-{sanitized_dataset_name}",  # ✅ fixed here
+        hub_model_id=f"Talking-Babies/{model_type}-{sanitized_dataset_name}",
         hub_strategy="every_save",
         learning_rate=5e-5 * (seq_len / 64),
         warmup_steps=warmup_steps,
-        lr_scheduler_type="linear"
+        lr_scheduler_type="linear",
     )
 
     print(f"Training arguments:\n{training_args}")
 
     # --- Trainer --- #
-
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        callbacks=[custom_checkpointing_callback]
+        callbacks=[CustomCheckpointingCallback(total_steps)],
     )
 
     # --- Stats --- #
-
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -201,7 +192,6 @@ def train_model(
     print("=" * box_width + "\n")
 
     # --- Train --- #
-
     start_time = time.time()
     trainer.train()
     end_time = time.time()
@@ -243,5 +233,7 @@ def main():
         dataset=args.dataset,
     )
 
+
 if __name__ == "__main__":
     main()
+
