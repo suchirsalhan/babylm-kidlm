@@ -68,11 +68,16 @@ def train_model(
 ):
     # --- Dataset Setup --- #
 
+# --- Dataset Setup --- #
+
     if dataset is None:
         dataset_name = f"train_100M_{seq_len}_single_shuffle"
         dataset = f"Talking-Babies/{dataset_name}"
     else:
         dataset_name = dataset if isinstance(dataset, str) else f"train_100M_{seq_len}_single_shuffle"
+
+    # Sanitize dataset name for valid hub_model_id
+    sanitized_dataset_name = dataset_name.replace("/", "-")
 
     print(f"Loading dataset: {dataset}")
     try:
@@ -162,7 +167,7 @@ def train_model(
         logging_steps=max(total_steps // 1000, 1),
         disable_tqdm=False,
         push_to_hub=push_to_hub,
-        hub_model_id=f"Talking-Babies/{model_type}-{dataset_name}",
+        hub_model_id=f"Talking-Babies/{model_type}-{sanitized_dataset_name}",  # ✅ fixed here
         hub_strategy="every_save",
         learning_rate=5e-5 * (seq_len / 64),
         warmup_steps=warmup_steps,
