@@ -80,26 +80,23 @@ def train_model(
     dry_run=False,
     num_devices=4,
     accumulation_steps=1,
+    dataset=None,
 ):
     ###
     ### Setup Dataset and Models
     ###
 
-    per_device_batch_size = GLOBAL_BATCH_SIZE / (accumulation_steps * num_devices)
-    if int(per_device_batch_size) != per_device_batch_size:
-        raise ValueError(
-            f"Batch size {per_device_batch_size} is not an integer. "
-            f"Please adjust the GLOBAL_BATCH_SIZE, num_devices, and accumulation_steps."
-        )
-    per_device_batch_size = int(per_device_batch_size)
-    print(f"Per device batch size: {per_device_batch_size} for an effective batch size of {accumulation_steps} * {num_devices} = {GLOBAL_BATCH_SIZE}")
+    if dataset is None:
+        dataset = f"Talking-Babies/train_100M_{seq_len}_single_shuffle"
 
+    print(f"Loading dataset: {dataset}")
     try:
-        dataset = load_dataset(f"Talking-Babies/train_100M_{seq_len}_single_shuffle")
+        dataset = load_dataset(dataset)
     except Exception as e:
-        print(f"Dataset for seq_len {seq_len} not found.")
+        print(f"Dataset '{dataset}' not found.")
         print(f"Error: {e}")
         exit(1)
+
     dataset = dataset.map(lambda x: {"labels": x["input_ids"]}, num_proc=16)
 
     train_dataset = dataset["train"]
@@ -113,6 +110,15 @@ def train_model(
     os.makedirs(output_dir, exist_ok=True)
 
     run_name = f"{model_type}_babylm_{seq_len}"
+
+    per_device_batch_size = GLOBAL_BATCH_SIZE / (accumulation_steps * num_devices)
+    if int(per_device_batch_size) != per_device_batch_size:
+        raise ValueError(
+            f"Batch size {per_device_batch_size} is not an integer. "
+            f"Please adjust the GLOBAL_BATCH_SIZE, num_devices, and accumulation_steps."
+        )
+    per_device_batch_size = int(per_device_batch_size)
+    print(f"Per device batch size: {per_device_batch_size} for an effective batch size of {accumulation_steps} * {num_devices} = {GLOBAL_BATCH_SIZE}")
 
     if model_type == "opt":
         config = OPTConfig(
@@ -244,6 +250,13 @@ def main():
         help="If set, do NOT push to the Hugging Face Hub.",
     )
     parser.add_argument("--dry_run", action="store_true")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default=None,
+        help="Dataset to load, e.g., 'Talking-Babies/train_100M_128_single_shuffle'. "
+             "Defaults to 'Talking-Babies/train_100M_<seq_len>_single_shuffle' based on seq_len.",
+    )
 
     args = parser.parse_args()
 
@@ -255,6 +268,7 @@ def main():
         dry_run=args.dry_run,
         num_devices=args.num_devices,
         accumulation_steps=args.accumulation_steps,
+        dataset=args.dataset,
     )
 
 if __name__ == "__main__":
