@@ -179,7 +179,7 @@ def train_model(
         logging_steps=max(total_steps // 1000, 1),
         disable_tqdm=False,
         push_to_hub=push_to_hub,
-        hub_model_id=f"babylm-seqlen/{model_type}-{seq_len}",
+        hub_model_id=f"Talking-Babies/{model_type}-{dataset}",
         hub_strategy="every_save",
         learning_rate=5e-5*(seq_len/64), # 5e-5 is the default in HF 
         warmup_steps=warmup_steps,  # Add warmup steps
