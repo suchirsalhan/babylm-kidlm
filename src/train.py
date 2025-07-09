@@ -1,5 +1,7 @@
 import os
 import time
+import shutil
+from pathlib import Path
 
 from datasets import load_dataset
 from transformers import (
@@ -8,15 +10,14 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-from transformers.trainer_utils import SaveStrategy
 from transformers.trainer_callback import TrainerCallback, TrainerState, TrainerControl
+from transformers.trainer_utils import SaveStrategy
 
 import wandb
 
-# --- Constants and Helpers --- #
-
+# --- Constants --- #
 TRAIN_EPOCHS = 10
-GLOBAL_BATCH_SIZE = 64  # 64*16k = 1M tokens per batch
+GLOBAL_BATCH_SIZE = 64  # 64 * 16k = 1M tokens per batch
 
 
 def get_deepspeed_config(accumulation_steps, num_devices):
@@ -33,31 +34,39 @@ def get_deepspeed_config(accumulation_steps, num_devices):
 
 
 class CustomCheckpointingCallback(TrainerCallback):
-    def __init__(self, total_steps):
+    """
+    BabyLM-style checkpointing:
+    - Every 1M tokens until 10M
+    - Every 10M tokens until 100M
+    - Every 100M tokens until 1B
+    """
+
+    def __init__(self, seq_len):
         super().__init__()
-        self.num_checkpoints = 0
-        self.rate = 0.001
-        self.total_steps = total_steps
+        self.seq_len = seq_len
+        self.total_tokens = 1_000_000_000  # simulate 1B-token training
+        self.token_checkpoints = (
+            [i * 1_000_000 for i in range(1, 11)] +
+            [i * 10_000_000 for i in range(2, 11)] +
+            [i * 100_000_000 for i in range(2, 11)]
+        )
+        self.token_checkpoints = sorted(set(self.token_checkpoints))
+        self.next_checkpoint_idx = 0
+        self.tokens_seen = 0
 
     def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        if (
-            args.save_strategy == SaveStrategy.STEPS
-            and state.save_steps > 0
-            and state.global_step % state.save_steps == 0
-        ):
-            control.should_save = True
-            self.num_checkpoints += 1
-            segment_size = self.rate * self.total_steps
-            next_save_step = int((self.num_checkpoints + 1) * segment_size)
-            state.save_steps = next_save_step if state.global_step - next_save_step > 0 else next_save_step + 1
-            print(f"Checkpointing at step {state.global_step}")
-            if self.num_checkpoints == 9:
-                self.rate *= 10
-                self.num_checkpoints = 0
+        tokens_this_step = GLOBAL_BATCH_SIZE * self.seq_len
+        self.tokens_seen += tokens_this_step
+
+        if self.next_checkpoint_idx < len(self.token_checkpoints):
+            next_threshold = self.token_checkpoints[self.next_checkpoint_idx]
+            if self.tokens_seen >= next_threshold:
+                print(f"[Checkpoint] Saving at {self.tokens_seen:,} tokens seen (threshold: {next_threshold:,})")
+                control.should_save = True
+                self.next_checkpoint_idx += 1
+
         return control
 
-
-# --- Model Training Script --- #
 
 def train_model(
     model_type="opt",
@@ -131,18 +140,16 @@ def train_model(
     local_rank = int(os.environ.get("RANK", 0))
     if local_rank == 0:
         wandb.init(
-            entity="babylm-seqlen",
+            entity="babylm-interaction",
             project=f"{model_type}-models",
             name=run_name,
             mode="disabled" if dry_run else "online",
         )
 
-    # --- Training Arguments --- #
     total_steps = TRAIN_EPOCHS * len(train_dataset) // GLOBAL_BATCH_SIZE
-    initial_save_steps = max(1, total_steps // 1000)
     warmup_steps = int(total_steps * 0.05)
 
-    print(f"Initial save steps: {initial_save_steps}")
+    print(f"Total steps: {total_steps}")
     print(f"Warmup steps: {warmup_steps}")
 
     training_args = TrainingArguments(
@@ -151,8 +158,8 @@ def train_model(
         gradient_accumulation_steps=accumulation_steps,
         num_train_epochs=TRAIN_EPOCHS,
         eval_strategy="no",
-        save_strategy="steps",
-        save_steps=initial_save_steps,
+        save_strategy="steps",  # still required for compatibility
+        save_steps=999_999_999,  # effectively disable default saving
         bf16=True,
         report_to="wandb",
         run_name=run_name,
@@ -167,14 +174,11 @@ def train_model(
         lr_scheduler_type="linear",
     )
 
-    print(f"Training arguments:\n{training_args}")
-
-    # --- Trainer --- #
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        callbacks=[CustomCheckpointingCallback(total_steps)],
+        callbacks=[CustomCheckpointingCallback(seq_len)],
     )
 
     # --- Stats --- #
@@ -199,14 +203,12 @@ def train_model(
     print(f"✅ Training {model_type.upper()} for seq_len {seq_len} done in {end_time - start_time:.2f}s")
 
 
-# --- Entry Point --- #
-
 def main():
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_type", type=str, default="opt", choices=["opt", "mamba"])
-    parser.add_argument("--seq_len", type=int, default=2048)
+    parser.add_argument("--seq_len", type=int, default=1024)
     parser.add_argument("--num_devices", type=int, default=4)
     parser.add_argument("--accumulation_steps", type=int, default=1)
     parser.add_argument("--use_deepspeed", action="store_true")
