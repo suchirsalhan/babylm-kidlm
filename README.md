@@ -1,5 +1,6 @@
 ```
 git clone https://github.com/suchirsalhan/babylm-kidlm
+python3.9 -m venv venvs/demo; source venvs/demo/bin/activate
 bash setup.sh
 pip install -e .  # From the repo root with the pyproject.toml
 ```
