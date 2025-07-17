@@ -83,29 +83,30 @@ def train_model(
         dataset_name = f"train_100M_{seq_len}_single_shuffle"
         dataset = f"Talking-Babies/{dataset_name}"
     else:
-        dataset_name = dataset if isinstance(dataset, str) else f"train_100M_{seq_len}_single_shuffle"
-
+        # Extract only the dataset name (last part) for logging and hub_model_id
+        dataset_name = dataset.split("/")[-1]
+    
     sanitized_dataset_name = dataset_name.replace("/", "-")
-
+    
     print(f"Loading dataset: {dataset}")
     try:
         dataset = load_dataset(dataset)
     except Exception as e:
         print(f"Dataset '{dataset}' not found.\nError: {e}")
         exit(1)
-
+    
     dataset = dataset.map(lambda x: {"labels": x["input_ids"]}, num_proc=16)
     train_dataset = dataset["train"]
-
+    
     if dry_run:
         train_dataset = train_dataset.select(range(100))
         output_dir = f"./dryruns/{model_type}-babylm-{seq_len}"
     else:
         output_dir = f"./checkpoints/{model_type}-babylm-{seq_len}"
-
+    
     os.makedirs(output_dir, exist_ok=True)
     run_name = f"{model_type}_babylm_{seq_len}"
-
+    
     per_device_batch_size = GLOBAL_BATCH_SIZE / (accumulation_steps * num_devices)
     if int(per_device_batch_size) != per_device_batch_size:
         raise ValueError(
@@ -114,7 +115,7 @@ def train_model(
         )
     per_device_batch_size = int(per_device_batch_size)
     print(f"Per device batch size: {per_device_batch_size} (effective batch size = {accumulation_steps} * {num_devices})")
-
+    
     # --- Model Setup --- #
     if model_type == "opt":
         config = OPTConfig(
@@ -126,7 +127,7 @@ def train_model(
             max_position_embeddings=seq_len,
         )
         model = OPTForCausalLM(config)
-
+    
     elif model_type == "mamba":
         from transformers import MambaConfig, MambaForCausalLM
         config = MambaConfig(
@@ -135,7 +136,7 @@ def train_model(
             num_hidden_layers=32,
         )
         model = MambaForCausalLM(config)
-
+    
     # --- WandB Logging --- #
     local_rank = int(os.environ.get("RANK", 0))
     if local_rank == 0:
@@ -145,13 +146,13 @@ def train_model(
             name=run_name,
             mode="disabled" if dry_run else "online",
         )
-
+    
     total_steps = TRAIN_EPOCHS * len(train_dataset) // GLOBAL_BATCH_SIZE
     warmup_steps = int(total_steps * 0.05)
-
+    
     print(f"Total steps: {total_steps}")
     print(f"Warmup steps: {warmup_steps}")
-
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=per_device_batch_size,
@@ -173,14 +174,14 @@ def train_model(
         warmup_steps=warmup_steps,
         lr_scheduler_type="linear",
     )
-
+    
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         callbacks=[CustomCheckpointingCallback(seq_len)],
     )
-
+    
     # --- Stats --- #
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
