@@ -77,8 +77,8 @@ from huggingface_hub import HfApi
 from functools import partial
 import os
 
-# Load and clean KidLM corpus from Hugging Face
-dataset = load_dataset("tafseer-nayeem/KidLM-corpus", split="train")
+# @GABI GAUDEAU – LOAD THE RELEVANT DATASET FROM HUGGINGFACE  
+#FOR EXAMPLE: dataset = load_dataset("Talking-Babies/INSERT DATASET NAME", split="train")
 
 # Group lines into documents separated by empty lines
 raw_data_list = []
@@ -97,37 +97,37 @@ if document:
 raw_dataset = Dataset.from_list(raw_data_list)
 raw_dataset = raw_dataset.shuffle(seed=420)
 
-# === Tokenization ===
+# === Tokenization - 1024 sequence length ===
 # Make sure this function is defined elsewhere in your script
 # def tokenize_and_chunk(example, seq_len): ...
 
-tokenize_and_chunk_2048 = partial(tokenize_and_chunk, seq_len=2048)
+tokenize_and_chunk_1024 = partial(tokenize_and_chunk, seq_len=1024)
 
-tokenized_dataset_2048 = raw_dataset.map(
-    tokenize_and_chunk_2048,
+tokenized_dataset_1024 = raw_dataset.map(
+    tokenize_and_chunk_1024,
     batched=True,
     batch_size=500,
     num_proc=8,
     remove_columns=raw_dataset.column_names
 )
 
-# Optional final shuffle – this is if we want to have single or doubly shuffled data
+# Optional final shuffle – this is if we want to have single or doubly shuffled data. For the Interaction Track, I have just used Single Shuffle. 
 SINGLE_SHUFFLE = False  # toggle as needed
 if not SINGLE_SHUFFLE:
-    tokenized_dataset_2048 = tokenized_dataset_2048.shuffle(seed=42)
+    tokenized_dataset_1024 = tokenized_dataset_1024.shuffle(seed=42)
 
 # === Save to Parquet ===
 os.makedirs("data/processed", exist_ok=True)
-parquet_path = 'data/processed/train_100M_2048'
+parquet_path = 'data/processed/train_100M_1024'
 if SINGLE_SHUFFLE:
     parquet_path += '_single_shuffle'
 parquet_path += '.parquet'
 
-tokenized_dataset_2048.to_parquet(parquet_path)
+tokenized_dataset_1024.to_parquet(parquet_path)
 
 # === Upload to Hugging Face Hub ===
 HF_TOKEN = os.getenv("HF_TOKEN")  # ensure this is set in your environment
-repo_id = "Talking-Babies/train_100M_2048"
+repo_id = "Talking-Babies/train_100M_1024"
 if SINGLE_SHUFFLE:
     repo_id += "_single_shuffle"
 
@@ -138,6 +138,6 @@ api.upload_file(
     path_or_fileobj=parquet_path,
     repo_id=repo_id,
     repo_type='dataset',
-    path_in_repo='train_100M_2048_single_shuffle.parquet' if SINGLE_SHUFFLE else 'train_100M_2048.parquet',
+    path_in_repo='train_100M_1024_single_shuffle.parquet' if SINGLE_SHUFFLE else 'train_100M_1024.parquet',
     token=HF_TOKEN
 )
