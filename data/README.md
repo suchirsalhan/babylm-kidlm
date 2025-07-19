@@ -4,4 +4,6 @@ See the Overleaf for word counts, which I have estimated should be equal to ~70M
 
 We need to combine each of these files into a single txt file, and then tokenise and shuffle to pretrain the OPT BabyLMs. 
 
-## KidLM
+## Some Potentially Useful Scripts
+
+See preprocess.py for some potentially useful preprocessing things.
