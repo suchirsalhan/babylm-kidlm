@@ -7,9 +7,9 @@ pip install -e .  # From the repo root with the pyproject.toml
 
 Command for Sam to Run
 ```
-poetry run train--model_type opt \
+poetry run train --model_type opt \
   --seq_len 1024 \
-  --dataset Talking-Babies/sam-babylm-test
+  --dataset Talking-Babies/sam-training-preshuffled
 ```
 
 ```
