@@ -1,6 +1,5 @@
 import os
 import time
-import shutil
 from pathlib import Path
 
 from datasets import load_dataset
@@ -11,8 +10,6 @@ from transformers import (
     TrainingArguments,
 )
 from transformers.trainer_callback import TrainerCallback, TrainerState, TrainerControl
-from transformers.trainer_utils import SaveStrategy
-
 import wandb
 
 # --- Constants --- #
@@ -34,17 +31,9 @@ def get_deepspeed_config(accumulation_steps, num_devices):
 
 
 class CustomCheckpointingCallback(TrainerCallback):
-    """
-    BabyLM-style checkpointing:
-    - Every 1M tokens until 10M
-    - Every 10M tokens until 100M
-    - Every 100M tokens until 1B
-    """
-
     def __init__(self, seq_len):
         super().__init__()
         self.seq_len = seq_len
-        self.total_tokens = 1_000_000_000
         self.token_checkpoints = (
             [i * 1_000_000 for i in range(1, 11)] +
             [i * 10_000_000 for i in range(2, 11)] +
@@ -101,12 +90,12 @@ def train_model(
 
     if dry_run:
         train_dataset = train_dataset.select(range(100))
-        output_dir = f"./dryruns/{model_type}-babylm-{seq_len}"
+        output_dir = f"./dryruns/{model_type}-{sanitized_dataset_name}-{seq_len}"
     else:
-        output_dir = f"./checkpoints/{model_type}-babylm-{seq_len}"
+        output_dir = f"./checkpoints/{model_type}-{sanitized_dataset_name}-{seq_len}"
 
     os.makedirs(output_dir, exist_ok=True)
-    run_name = f"{model_type}_babylm_{seq_len}"
+    run_name = f"{model_type}_{sanitized_dataset_name}_{seq_len}"
 
     # --- Checkpoint Detection Logic --- #
     latest_checkpoint = None
@@ -239,25 +228,9 @@ def main():
     parser.add_argument("--use_deepspeed", action="store_true")
     parser.add_argument("--no_push_to_hub", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
-
-    parser.add_argument(
-        "--dataset",
-        type=str,
-        default=None,
-        help="Dataset to load, e.g., 'Talking-Babies/train_100M_128_single_shuffle'."
-    )
-    parser.add_argument(
-        "--resume",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether to resume from the latest checkpoint (default: True)"
-    )
-    parser.add_argument(
-        "--resume_from",
-        type=str,
-        default=None,
-        help="Path to a specific checkpoint to resume from"
-    )
+    parser.add_argument("--dataset", type=str, default=None)
+    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--resume_from", type=str, default=None)
 
     args = parser.parse_args()
 
