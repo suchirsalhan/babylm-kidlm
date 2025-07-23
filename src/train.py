@@ -44,7 +44,7 @@ class CustomCheckpointingCallback(TrainerCallback):
     def __init__(self, seq_len):
         super().__init__()
         self.seq_len = seq_len
-        self.total_tokens = 1_000_000_000  # simulate 1B-token training
+        self.total_tokens = 1_000_000_000
         self.token_checkpoints = (
             [i * 1_000_000 for i in range(1, 11)] +
             [i * 10_000_000 for i in range(2, 11)] +
@@ -77,36 +77,55 @@ def train_model(
     num_devices=4,
     accumulation_steps=1,
     dataset=None,
+    resume=True,
+    resume_from=None,
 ):
     # --- Dataset Setup --- #
     if dataset is None:
         dataset_name = f"train_100M_{seq_len}_single_shuffle"
         dataset = f"Talking-Babies/{dataset_name}"
     else:
-        # Extract only the dataset name (last part) for logging and hub_model_id
         dataset_name = dataset.split("/")[-1]
-    
+
     sanitized_dataset_name = dataset_name.replace("/", "-")
-    
+
     print(f"Loading dataset: {dataset}")
     try:
         dataset = load_dataset(dataset)
     except Exception as e:
         print(f"Dataset '{dataset}' not found.\nError: {e}")
         exit(1)
-    
+
     dataset = dataset.map(lambda x: {"labels": x["input_ids"]}, num_proc=16)
     train_dataset = dataset["train"]
-    
+
     if dry_run:
         train_dataset = train_dataset.select(range(100))
         output_dir = f"./dryruns/{model_type}-babylm-{seq_len}"
     else:
         output_dir = f"./checkpoints/{model_type}-babylm-{seq_len}"
-    
+
     os.makedirs(output_dir, exist_ok=True)
     run_name = f"{model_type}_babylm_{seq_len}"
-    
+
+    # --- Checkpoint Detection Logic --- #
+    latest_checkpoint = None
+    if resume_from:
+        if os.path.isdir(resume_from):
+            latest_checkpoint = resume_from
+            print(f"🔁 Resuming from specific checkpoint: {latest_checkpoint}")
+        else:
+            raise ValueError(f"Specified checkpoint path does not exist: {resume_from}")
+    elif resume and not dry_run:
+        checkpoints = sorted(Path(output_dir).glob("checkpoint-*"), key=lambda x: int(x.name.split("-")[-1]))
+        if checkpoints:
+            latest_checkpoint = str(checkpoints[-1])
+            print(f"🔁 Resuming from latest checkpoint: {latest_checkpoint}")
+        else:
+            print("ℹ️ No checkpoint found. Starting from scratch.")
+    else:
+        print("🚫 Resumption disabled or not applicable. Starting from scratch.")
+
     per_device_batch_size = GLOBAL_BATCH_SIZE / (accumulation_steps * num_devices)
     if int(per_device_batch_size) != per_device_batch_size:
         raise ValueError(
@@ -115,28 +134,32 @@ def train_model(
         )
     per_device_batch_size = int(per_device_batch_size)
     print(f"Per device batch size: {per_device_batch_size} (effective batch size = {accumulation_steps} * {num_devices})")
-    
+
     # --- Model Setup --- #
-    if model_type == "opt":
-        config = OPTConfig(
-            vocab_size=50257,
-            hidden_size=768,
-            num_attention_heads=12,
-            num_hidden_layers=12,
-            ffn_dim=3072,
-            max_position_embeddings=seq_len,
-        )
-        model = OPTForCausalLM(config)
-    
-    elif model_type == "mamba":
-        from transformers import MambaConfig, MambaForCausalLM
-        config = MambaConfig(
-            vocab_size=50257,
-            hidden_size=768,
-            num_hidden_layers=32,
-        )
-        model = MambaForCausalLM(config)
-    
+    if latest_checkpoint:
+        from transformers import AutoModelForCausalLM
+        model = AutoModelForCausalLM.from_pretrained(latest_checkpoint)
+    else:
+        if model_type == "opt":
+            config = OPTConfig(
+                vocab_size=50257,
+                hidden_size=768,
+                num_attention_heads=12,
+                num_hidden_layers=12,
+                ffn_dim=3072,
+                max_position_embeddings=seq_len,
+            )
+            model = OPTForCausalLM(config)
+
+        elif model_type == "mamba":
+            from transformers import MambaConfig, MambaForCausalLM
+            config = MambaConfig(
+                vocab_size=50257,
+                hidden_size=768,
+                num_hidden_layers=32,
+            )
+            model = MambaForCausalLM(config)
+
     # --- WandB Logging --- #
     local_rank = int(os.environ.get("RANK", 0))
     if local_rank == 0:
@@ -145,22 +168,23 @@ def train_model(
             project=f"{model_type}-models",
             name=run_name,
             mode="disabled" if dry_run else "online",
+            config={"resume_from": latest_checkpoint if latest_checkpoint else "none"}
         )
-    
+
     total_steps = TRAIN_EPOCHS * len(train_dataset) // GLOBAL_BATCH_SIZE
     warmup_steps = int(total_steps * 0.05)
-    
+
     print(f"Total steps: {total_steps}")
     print(f"Warmup steps: {warmup_steps}")
-    
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=per_device_batch_size,
         gradient_accumulation_steps=accumulation_steps,
         num_train_epochs=TRAIN_EPOCHS,
         eval_strategy="no",
-        save_strategy="steps",  # still required for compatibility
-        save_steps=999_999_999,  # effectively disable default saving
+        save_strategy="steps",
+        save_steps=999_999_999,
         bf16=True,
         report_to="wandb",
         run_name=run_name,
@@ -174,14 +198,14 @@ def train_model(
         warmup_steps=warmup_steps,
         lr_scheduler_type="linear",
     )
-    
+
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         callbacks=[CustomCheckpointingCallback(seq_len)],
     )
-    
+
     # --- Stats --- #
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -198,7 +222,7 @@ def train_model(
 
     # --- Train --- #
     start_time = time.time()
-    trainer.train()
+    trainer.train(resume_from_checkpoint=latest_checkpoint if latest_checkpoint else None)
     end_time = time.time()
 
     print(f"✅ Training {model_type.upper()} for seq_len {seq_len} done in {end_time - start_time:.2f}s")
@@ -215,12 +239,24 @@ def main():
     parser.add_argument("--use_deepspeed", action="store_true")
     parser.add_argument("--no_push_to_hub", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
+
     parser.add_argument(
         "--dataset",
         type=str,
         default=None,
-        help="Dataset to load, e.g., 'Talking-Babies/train_100M_128_single_shuffle'. "
-             "Defaults to 'Talking-Babies/train_100M_<seq_len>_single_shuffle' based on seq_len.",
+        help="Dataset to load, e.g., 'Talking-Babies/train_100M_128_single_shuffle'."
+    )
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to resume from the latest checkpoint (default: True)"
+    )
+    parser.add_argument(
+        "--resume_from",
+        type=str,
+        default=None,
+        help="Path to a specific checkpoint to resume from"
     )
 
     args = parser.parse_args()
@@ -234,9 +270,10 @@ def main():
         num_devices=args.num_devices,
         accumulation_steps=args.accumulation_steps,
         dataset=args.dataset,
+        resume=args.resume,
+        resume_from=args.resume_from,
     )
 
 
 if __name__ == "__main__":
     main()
-
